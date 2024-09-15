@@ -30,6 +30,9 @@ DropdownView {
 
     property var model: null
     required property int visibleItemsCount
+    property string typeAheadStr: ""
+    property string lastTypedChar: ""
+    property int lastHighlightedIndex: -1
 
     default property alias contentData: content.contentData
 
@@ -60,6 +63,15 @@ DropdownView {
     //!       of the element from which the dropdown was opened
     required property var accessibleWindow
 
+    property Timer typeAheadTimer: Timer {
+        interval: 1000
+        repeat: false
+        onTriggered: {
+            typeAheadStr = "";
+            lastTypedChar = "";
+        }
+    }
+
     x: 0
     y: 0
 
@@ -67,8 +79,6 @@ DropdownView {
     margins: 0
 
     showArrow: false
-
-    openPolicies: PopupView.NoActivateFocus
 
     signal handleItem(int index, var value)
 
@@ -163,51 +173,85 @@ DropdownView {
             QtObject {
                 id: prv
 
-                function itemIndexByFirstChar(text) {
-                    if (text === "") {
-                        return;
-                    }
-
-                    text = text.toLowerCase()
-                    for (var i = 0; i < root.model.length; ++i) {
-                        var itemText =  Utils.getItemValue(root.model, i, root.textRole, "")
-                        if (itemText.toLowerCase().startsWith(text)) {
-                            return i
-                        }
-                    }
-
-                    return -1
-                }
-
                 function positionViewAtIndex(itemIndex) {
                     view.positionViewAtIndex(itemIndex, ListView.Contain)
-
-                    correctPosition(itemIndex)
                 }
 
-                function correctPosition(itemIndex) {
-                    var item = view.itemAtIndex(itemIndex)
-                    if (Boolean(item)) {
-                        var diff = item.mapToGlobal(0, 0).y - root.parent.mapToGlobal(0, 0).y
+                function focusNextMatchingItem(str) {
+                    str = str.toLowerCase();
+                    var matches = findMatchingItems(str);
 
-                        if (view.contentY + diff + view.height > view.contentHeight) {
-                            view.positionViewAtEnd()
-                        } else if (view.contentY + diff < 0) {
-                            view.positionViewAtBeginning()
-                        } else {
-                            view.contentY += diff
+                    if (matches.length > 0) {
+                        navigateToNextMatch(matches);
+                        return true;
+                    }
+
+                    var nextItemIndex = findNextItemByText(str);
+                    if (nextItemIndex !== -1) {
+                        highlightItem(nextItemIndex);
+                        lastHighlightedIndex = nextItemIndex;
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                function findMatchingItems(str) {
+                    var matches = [];
+                    for (var i = 0; i < root.model.length; i++) {
+                        var itemText = Utils.getItemValue(root.model, i, root.textRole).trim().toLowerCase();
+                        if (itemText.startsWith(str)) {
+                            matches.push(i);
                         }
                     }
-
-                    Qt.callLater(navigateToItem, itemIndex)
+                    return matches;
                 }
 
-                function navigateToItem(itemIndex, byUser) {
-                    var item = view.itemAtIndex(itemIndex)
-                    if (Boolean(item)) {
-                        item.navigation.requestActive(byUser)
+                function navigateToNextMatch(matches) {
+                    if (lastHighlightedIndex === -1 || !matches.includes(lastHighlightedIndex)) {
+                        lastHighlightedIndex = matches[0];
+                    } else {
+                        var currentIndexInMatches = matches.indexOf(lastHighlightedIndex);
+                        lastHighlightedIndex = matches[(currentIndexInMatches + 1) % matches.length];
+                    }
+                    highlightItem(lastHighlightedIndex);
+                }
+
+                function findNextItemByText(str) {
+                    for (var i = 0; i < root.model.length; i++) {
+                        var itemText = Utils.getItemValue(root.model, i, root.textRole).trim().toLowerCase();
+                        if (itemText > str) {
+                            return i;
+                        }
+                    }
+                    return -1;
+                }
+
+
+                function typeAheadFind() {
+                    if (typeAheadStr.length) {
+                        root.typeAheadTimer.restart();
+                        focusNextMatchingItem(typeAheadStr);
                     }
                 }
+
+                function highlightItem(index) {
+                    root.currentIndex = index
+                    scrollToItem(index)
+                }
+
+                function scrollToItem(index) {
+                    var itemHeight = root.itemHeight;
+                    var totalItems = root.model.length;
+
+                    var itemTop = index * itemHeight;
+                    var middleOffset = (view.height / 2);
+
+                    var scrollPosition = itemTop - middleOffset;
+                    var maxContentHeight = totalItems * itemHeight;
+                    view.contentY = Math.max(0, Math.min(scrollPosition, maxContentHeight - view.height));
+                }
+
             }
 
             delegate: ListItemBlank {
@@ -235,25 +279,20 @@ DropdownView {
                 }
 
                 Keys.onShortcutOverride: function(event) {
-                    if (event.text === "") {
-                        event.accepted = false
-                        return
-                    }
 
-                    if (prv.itemIndexByFirstChar(event.text) > -1) {
-                        event.accepted = true
-                    }
-                }
+                    var typedChar = event.text.toLowerCase();
+                    if (typedChar.length === 1 && /^[a-z0-9]$/.test(typedChar)) {
+                        if (typeAheadStr.length > 0 && lastTypedChar === typedChar) {
+                            typeAheadStr = typedChar;
+                        } else {
+                            typeAheadStr += typedChar;
+                        }
 
-                Keys.onPressed: function(event) {
-                    if (event.text === "") {
-                        return
-                    }
-
-                    var index = prv.itemIndexByFirstChar(event.text)
-                    if (index > -1) {
-                        view.positionViewAtIndex(index, ListView.Contain)
-                        Qt.callLater(navigateToItem, index, true)
+                        lastTypedChar = typedChar;
+                        prv.typeAheadFind();
+                        event.accepted = true;
+                    } else {
+                        event.accepted = false;
                     }
                 }
 
